@@ -5,19 +5,22 @@
  * This factory function accepts OpenCode dependencies to create Kilo-specific routes
  */
 
-import { fetchProfile, fetchBalance } from "../api/profile.js"
 import { fetchKilocodeNotifications, KilocodeNotificationSchema } from "../api/notifications.js"
 import { fetchOrganizationModes, clearModesCache } from "../api/modes.js"
-import {
-  KILO_API_BASE,
-  KILO_CHAT_URL,
-  KILO_EVENT_SERVICE_URL,
-  HEADER_FEATURE,
-  HEADER_ORGANIZATIONID,
-} from "../api/constants.js"
+import { KILO_API_BASE, HEADER_FEATURE, HEADER_ORGANIZATIONID } from "../api/constants.js"
 import { buildKiloHeaders } from "../headers.js"
 import type { ImportDeps, DrizzleDb } from "../cloud-sessions.js"
 import { fetchCloudSession, fetchCloudSessionForImport, importSessionToDb } from "../cloud-sessions.js"
+import {
+  GatewayError,
+  UnauthorizedError,
+  getClawChatCredentials,
+  getClawStatus,
+  getCloudSessions,
+  getNotifications,
+  getProfile,
+  setOrganization,
+} from "./handlers.js"
 
 // Type definitions for OpenCode dependencies (injected at runtime)
 type Hono = any
@@ -38,7 +41,7 @@ interface KiloRoutesDeps extends ImportDeps {
   Auth: Auth
   ModelCache: ModelCache
   z: Z
-  Instance: ImportDeps["Instance"] & { disposeAll(): Promise<void> }
+  Instances: { disposeAllInstances(): Promise<void> }
 }
 
 const FIM_TIMEOUT_MS = 30_000
@@ -85,6 +88,7 @@ export function createKiloRoutes(deps: KiloRoutesDeps) {
     SessionCreatedEvent,
     Identifier,
     ModelCache,
+    Instances,
   } = deps
 
   const Organization = z.object({
@@ -131,6 +135,21 @@ export function createKiloRoutes(deps: KiloRoutesDeps) {
     cost: z.number().optional(),
   })
 
+  const TranscriptionResponse = z.object({
+    text: z.string(),
+    usage: z.unknown().optional(),
+  })
+
+  const getProxyAuth = async () => {
+    const auth = await Auth.get("kilo")
+    const token = auth?.type === "api" ? auth.key : auth?.type === "oauth" ? auth.access : undefined
+    return {
+      auth,
+      token,
+      organizationId: auth?.type === "oauth" ? auth.accountId : undefined,
+    }
+  }
+
   return new Hono()
     .get(
       "/profile",
@@ -151,24 +170,12 @@ export function createKiloRoutes(deps: KiloRoutesDeps) {
         },
       }),
       async (c: any) => {
-        // Get Kilo auth
-        const auth = await Auth.get("kilo")
-
-        if (!auth || auth.type !== "oauth") {
+        try {
+          return c.json(await getProfile(Auth))
+        } catch (err) {
+          if (!(err instanceof UnauthorizedError)) throw err
           return c.json({ error: "Not authenticated with Kilo Gateway" }, 401)
         }
-
-        const token = auth.access
-        const currentOrgId = auth.accountId ?? null
-
-        // Fetch profile and balance in parallel
-        // Pass organizationId to fetchBalance to get team balance when in org context
-        const [profile, balance] = await Promise.all([
-          fetchProfile(token),
-          fetchBalance(token, currentOrgId ?? undefined),
-        ])
-
-        return c.json({ profile, balance, currentOrgId })
       },
     )
     .post(
@@ -198,27 +205,21 @@ export function createKiloRoutes(deps: KiloRoutesDeps) {
       async (c: any) => {
         const { organizationId } = c.req.valid("json")
 
-        // Get current Kilo auth
-        const auth = await Auth.get("kilo")
-
-        if (!auth || auth.type !== "oauth") {
+        try {
+          return c.json(
+            await setOrganization(
+              {
+                auth: Auth,
+                clear: () => ModelCache.clear("kilo"),
+                dispose: () => Instances.disposeAllInstances(),
+              },
+              organizationId,
+            ),
+          )
+        } catch (err) {
+          if (!(err instanceof UnauthorizedError)) throw err
           return c.json({ error: "Not authenticated with Kilo Gateway" }, 401)
         }
-
-        // Update auth with new organization ID
-        await Auth.set("kilo", {
-          type: "oauth",
-          refresh: auth.refresh,
-          access: auth.access,
-          expires: auth.expires,
-          ...(organizationId && { accountId: organizationId }),
-        })
-
-        ModelCache.clear("kilo")
-        clearModesCache()
-        await Instance.disposeAll()
-
-        return c.json(true)
       },
     )
     .get(
@@ -323,18 +324,15 @@ export function createKiloRoutes(deps: KiloRoutesDeps) {
         }),
       ),
       async (c: any) => {
-        const auth = await Auth.get("kilo")
+        const proxy = await getProxyAuth()
 
-        if (!auth) {
+        if (!proxy.auth) {
           return c.json({ error: "Not authenticated with Kilo Gateway" }, 401)
         }
 
-        const token = auth.type === "api" ? auth.key : auth.type === "oauth" ? auth.access : undefined
-        if (!token) {
+        if (!proxy.token) {
           return c.json({ error: "No valid token found" }, 401)
         }
-
-        const organizationId = auth.type === "oauth" ? auth.accountId : undefined
 
         const { prefix, suffix, model, maxTokens, temperature } = c.req.valid("json")
         const fimModel = model ?? "mistralai/codestral-2501"
@@ -346,8 +344,8 @@ export function createKiloRoutes(deps: KiloRoutesDeps) {
 
         const headers = {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-          ...buildKiloHeaders(undefined, { kilocodeOrganizationId: organizationId }),
+          Authorization: `Bearer ${proxy.token}`,
+          ...buildKiloHeaders(undefined, { kilocodeOrganizationId: proxy.organizationId }),
           [HEADER_FEATURE]: "autocomplete",
         }
 
@@ -389,6 +387,67 @@ export function createKiloRoutes(deps: KiloRoutesDeps) {
         })
       },
     )
+    .post(
+      "/audio/transcriptions",
+      describeRoute({
+        summary: "Speech to text transcription",
+        description: "Proxy an audio transcription request to the Kilo Gateway",
+        operationId: "kilo.audio.transcriptions",
+        responses: {
+          200: {
+            description: "Transcription response",
+            content: {
+              "application/json": {
+                schema: resolver(TranscriptionResponse),
+              },
+            },
+          },
+          ...errors(400, 401),
+        },
+      }),
+      validator(
+        "json",
+        z.object({
+          model: z.string(),
+          input_audio: z.object({
+            data: z.string(),
+            format: z.string(),
+          }),
+          language: z.string().optional(),
+          prompt: z.string().optional(),
+          temperature: z.number().optional(),
+        }),
+      ),
+      async (c: any) => {
+        const proxy = await getProxyAuth()
+        if (!proxy.auth) return c.json({ error: "Not authenticated with Kilo Gateway" }, 401)
+
+        if (!proxy.token) return c.json({ error: "No valid token found" }, 401)
+
+        const body = c.req.valid("json")
+        const headers = {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${proxy.token}`,
+          ...buildKiloHeaders(undefined, { kilocodeOrganizationId: proxy.organizationId }),
+          [HEADER_FEATURE]: "vscode-extension",
+        }
+
+        const response = await fetch(`${KILO_API_BASE}/api/gateway/v1/audio/transcriptions`, {
+          method: "POST",
+          headers,
+          signal: c.req.raw.signal,
+          body: JSON.stringify(body),
+        })
+
+        const text = await response.text()
+        return new Response(text, {
+          status: response.status,
+          headers: {
+            "Content-Type": response.headers.get("Content-Type") ?? "application/json",
+          },
+        })
+      },
+    )
     .get(
       "/notifications",
       describeRoute({
@@ -408,19 +467,7 @@ export function createKiloRoutes(deps: KiloRoutesDeps) {
         },
       }),
       async (c: any) => {
-        const auth = await Auth.get("kilo")
-        if (!auth) return c.json([])
-
-        const token = auth.type === "api" ? auth.key : auth.type === "oauth" ? auth.access : undefined
-        if (!token) return c.json([])
-
-        const organizationId = auth.type === "oauth" ? auth.accountId : undefined
-        const notifications = await fetchKilocodeNotifications({
-          kilocodeToken: token,
-          kilocodeOrganizationId: organizationId,
-        })
-
-        return c.json(notifications)
+        return c.json(await getNotifications(Auth))
       },
     )
     .get(
@@ -569,29 +616,11 @@ export function createKiloRoutes(deps: KiloRoutesDeps) {
       }),
       async (c: any) => {
         try {
-          const auth = await Auth.get("kilo")
-          if (!auth) return c.json({ error: "Not authenticated with Kilo Gateway" }, 401)
-          const token = auth.type === "api" ? auth.key : auth.type === "oauth" ? auth.access : undefined
-          if (!token) return c.json({ error: "No valid token found" }, 401)
-
-          const organizationId = auth.type === "oauth" ? auth.accountId : undefined
-          const headers: Record<string, string> = {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-          }
-          if (organizationId) {
-            headers[HEADER_ORGANIZATIONID] = organizationId
-          }
-
-          const response = await fetch(`${KILO_API_BASE}/api/kiloclaw/status`, { headers })
-
-          if (!response.ok) {
-            const text = await response.text()
-            return c.json({ error: `KiloClaw request failed: ${response.status} ${text}` }, response.status as any)
-          }
-
-          return c.json(await response.json())
+          return c.json(await getClawStatus(Auth))
         } catch (err: any) {
+          if (err instanceof GatewayError) {
+            return c.json({ error: `KiloClaw request failed: ${err.status} ${err.message}` }, err.status as any)
+          }
           console.error("[Kilo Gateway] claw/status: error", err?.message ?? err)
           return c.json({ error: "Failed to reach KiloClaw" }, 502)
         }
@@ -628,25 +657,12 @@ export function createKiloRoutes(deps: KiloRoutesDeps) {
         },
       }),
       async (c: any) => {
-        const auth = await Auth.get("kilo")
-        if (!auth) return c.json({ error: "Not authenticated with Kilo Gateway" }, 401)
-        const token = auth.type === "api" ? auth.key : auth.type === "oauth" ? auth.access : undefined
-        if (!token) return c.json({ error: "No valid token found" }, 401)
-
-        // For OAuth, expires is a millisecond epoch we already track. For
-        // API tokens we don't have a verified expiry locally — the JWT is
-        // signed by the cloud and validated by kilo-chat/event-service on
-        // every request. Use a far-future placeholder so the client cache
-        // doesn't refetch unnecessarily; on 401 the client clears the
-        // cache and prompts re-auth.
-        const expiresAtMs = auth.type === "oauth" ? auth.expires : Date.now() + 365 * 24 * 60 * 60 * 1000
-
-        return c.json({
-          token,
-          expiresAt: new Date(expiresAtMs).toISOString(),
-          kiloChatUrl: KILO_CHAT_URL,
-          eventServiceUrl: KILO_EVENT_SERVICE_URL,
-        })
+        try {
+          return c.json(await getClawChatCredentials(Auth))
+        } catch (err) {
+          if (!(err instanceof UnauthorizedError)) throw err
+          return c.json({ error: "Not authenticated with Kilo Gateway" }, 401)
+        }
       },
     )
     .get(
@@ -696,63 +712,9 @@ export function createKiloRoutes(deps: KiloRoutesDeps) {
           const token = auth.type === "api" ? auth.key : auth.type === "oauth" ? auth.access : undefined
           if (!token) return c.json({ error: "No valid token found" }, 401)
 
-          const { cursor, limit, gitUrl } = c.req.valid("query")
-
-          const input: Record<string, unknown> = {}
-          if (cursor) input.cursor = cursor
-          if (limit) input.limit = limit
-          if (gitUrl) input.gitUrl = gitUrl
-
-          const params = new URLSearchParams({
-            batch: "1",
-            input: JSON.stringify({ "0": input }),
-          })
-
-          const url = `${KILO_API_BASE}/api/trpc/cliSessionsV2.list?${params.toString()}`
-
-          const response = await fetch(url, {
-            headers: {
-              Authorization: `Bearer ${token}`,
-              "Content-Type": "application/json",
-              ...buildKiloHeaders(),
-            },
-          })
-
-          if (!response.ok) {
-            const text = await response.text()
-            console.error("[Kilo Gateway] cloud-sessions: tRPC request failed", {
-              status: response.status,
-              body: text.slice(0, 500),
-            })
-            return c.json({ error: `Cloud sessions fetch failed: ${response.status}` }, response.status as any)
-          }
-
-          const raw = await response.text()
-          const json = JSON.parse(raw)
-          const data = Array.isArray(json) ? json[0]?.result?.data : null
-          const result = data?.json ?? data
-          if (!result) return c.json({ cliSessions: [], nextCursor: null })
-
-          const sessions = (result.cliSessions ?? []).map((s: any) => ({
-            session_id: s.session_id,
-            title: s.title ?? null,
-            created_at:
-              typeof s.created_at === "string"
-                ? s.created_at
-                : s.created_at
-                  ? new Date(s.created_at).toISOString()
-                  : new Date().toISOString(),
-            updated_at:
-              typeof s.updated_at === "string"
-                ? s.updated_at
-                : s.updated_at
-                  ? new Date(s.updated_at).toISOString()
-                  : new Date().toISOString(),
-            version: s.version ?? 0,
-          }))
-
-          return c.json({ cliSessions: sessions, nextCursor: result.nextCursor ?? null })
+          return c.json(await getCloudSessions(token, c.req.valid("query")))
         } catch (err: any) {
+          if (err instanceof GatewayError) return c.json({ error: err.message }, err.status as any)
           console.error("[Kilo Gateway] cloud-sessions: unhandled error", err?.message ?? err)
           return c.json({ error: "Internal error" }, 500)
         }

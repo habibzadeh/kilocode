@@ -10,8 +10,8 @@ import { ProjectProvider } from "../../../../src/cli/cmd/tui/context/project"
 import { SDKProvider, type EventSource } from "../../../../src/cli/cmd/tui/context/sdk"
 import { SyncProvider, useSync } from "../../../../src/cli/cmd/tui/context/sync"
 import { ToastProvider } from "../../../../src/cli/cmd/tui/ui/toast" // kilocode_change
-import { Instance } from "../../../../src/project/instance" // kilocode_change
-import { tmpdir } from "../../../fixture/fixture"
+import { WithInstance } from "../../../../src/project/with-instance" // kilocode_change
+import { disposeAllInstances, tmpdir } from "../../../fixture/fixture"
 
 const worktree = "/tmp/opencode"
 const directory = `${worktree}/packages/opencode`
@@ -52,6 +52,7 @@ function createFetch() {
         return json([])
       case "/config":
       case "/experimental/resource":
+      case "/global/config": // kilocode_change
       case "/mcp":
       case "/provider/auth":
       case "/session/status":
@@ -137,7 +138,7 @@ describe("tui sync", () => {
     await using tmp = await tmpdir()
     Global.Path.state = tmp.path
     await Bun.write(`${tmp.path}/kv.json`, "{}")
-    const { app, kv, sync, session } = await Instance.provide({ directory: tmp.path, fn: mount }) // kilocode_change
+    const { app, kv, sync, session } = await WithInstance.provide({ directory: tmp.path, fn: mount }) // kilocode_change
 
     try {
       expect(kv.get("session_directory_filter_enabled", true)).toBe(true)
@@ -151,7 +152,7 @@ describe("tui sync", () => {
       expect(session.at(-1)?.searchParams.get("path")).toBeNull()
     } finally {
       app.renderer.destroy()
-      await Instance.disposeAll() // kilocode_change
+      await disposeAllInstances() // kilocode_change
       Global.Path.state = previous
     }
   })

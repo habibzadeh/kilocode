@@ -14,9 +14,34 @@ There are lots of ways to contribute to the project:
 
 The Kilo Community is [on Discord](https://kilo.ai/discord).
 
+## Prerequisites
+
+- **Bun 1.3.13+** — required for all packages.
+- **Java 21** — required by the JetBrains plugin. The root `bun turbo typecheck` and `bun turbo test:ci` commands include `@kilocode/kilo-jetbrains` and will fail without Java 21.
+
+  The preferred way to install Java is via [SDKMAN](https://sdkman.io/install):
+
+  ```bash
+  # Install SDKMAN (if not already installed)
+  curl -s "https://get.sdkman.io" | bash
+
+  # Install and activate Java 21 (Eclipse Temurin)
+  sdk install java 21-tem
+  sdk use java 21-tem
+
+  # Verify
+  java -version
+  ```
+
+  If you don't plan to work on the JetBrains plugin, you can still run non-JetBrains checks directly:
+
+  ```bash
+  bun turbo typecheck --filter=!@kilocode/kilo-jetbrains
+  ```
+
 ## Developing Kilo CLI
 
-- **Requirements:** Bun 1.3.13+
+- **Requirements:** Bun 1.3.13+, Java 21 (see [Prerequisites](#prerequisites) above)
 - Install dependencies and start the dev server from the repo root:
 
   ```bash
@@ -33,6 +58,23 @@ bun run extension        # Build + launch in dev mode
 ```
 
 This auto-detects VS Code on macOS, Linux, and Windows. Override with `--app-path PATH` or `VSCODE_EXEC_PATH`. Use `--insiders` to prefer Insiders, `--workspace PATH` to open a specific folder, or `--clean` to reset cached state.
+
+### Developing the JetBrains Plugin
+
+Requires Java 21 (see [Prerequisites](#prerequisites)). From `packages/kilo-jetbrains/`:
+
+```bash
+./gradlew typecheck    # Compile-check all Kotlin sources
+./gradlew test         # Run all tests (backend + frontend)
+./gradlew runIde       # Launch sandboxed IntelliJ with the plugin
+```
+
+Or via the root turbo filter to run only JetBrains checks from the repo root:
+
+```bash
+bun turbo typecheck --filter=@kilocode/kilo-jetbrains
+bun turbo test:ci --filter=@kilocode/kilo-jetbrains
+```
 
 ### Running against a different directory
 
@@ -136,29 +178,18 @@ There are also optional overrides for other services:
 
 If you open an issue through the GitHub web UI, GitHub will guide you through the correct template automatically.
 
-If you open an issue through `gh issue create`, the API, or another tool that bypasses the web UI, include the equivalent required fields yourself so the issue still matches the template.
+If you open an issue through `gh issue create`, the API, or another tool that bypasses the web UI, include the equivalent required fields yourself so the issue still matches the template. Issues that skip required fields may be auto-closed by the compliance bot.
 
 Current required fields by issue type:
 
-- **Bug report:** include a `Description`.
-- **Feature request:** prefix the title with `[FEATURE]:`, include confirmation that the feature has not already been suggested, and add a description of the enhancement.
-- **Question:** include the `Question`.
-
-Recommended fields for bug reports, even when not strictly required by the template:
-
-- Plugins
-- Kilo version
-- Steps to reproduce
-- Screenshot and/or share link
-- Operating System
-- Terminal
+- **Bug report:** include a `Description`. When you can, also add Plugins, Kilo version, Steps to reproduce, Screenshot and/or share link, Operating System, and Terminal so the report matches the full bug template.
+- **Feature request:** use a title prefixed with `[FEATURE]:`, complete the required checkbox confirming you have searched for duplicates, and fill in `Describe the enhancement you want to request`.
+- **Question:** include the `Question` field.
 
 ## Pull Request Expectations
 
-- **Issue First Policy:** All PRs must reference an existing issue.
 - **UI Changes:** Include screenshots or videos (before/after).
 - **Logic Changes:** Explain how you verified it works.
-- **PR Titles:** Follow conventional commit standards (`feat:`, `fix:`, `docs:`, etc.).
 
 ## Issue First Policy
 

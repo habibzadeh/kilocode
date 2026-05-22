@@ -12,7 +12,7 @@ Kilo CLI is an open source AI coding agent that generates code from natural lang
 - **Dev**: `bun run dev` (runs from root) or `bun run --cwd packages/opencode --conditions=browser src/index.ts`
 - **Dev with params**: `bun dev -- help`
 - **Extension**: `bun run extension` (build + launch VS Code with the extension in dev mode). Pass `--no-build` to skip the build.
-- **Typecheck**: `bun turbo typecheck` (uses `tsgo`, not `tsc`)
+- **Typecheck**: `bun turbo typecheck` (uses `tsgo`, not `tsc`). Includes the JetBrains plugin — requires Java 21. Check with `java -version` before running. If missing, install via SDKMAN: `sdk install java 21-tem && sdk use java 21-tem`. If SDKMAN is not installed, see https://sdkman.io/install.
 - **Test**: `bun test` from `packages/opencode/` (NOT from root -- root blocks tests)
 - **Single test**: `bun test ./test/tool/tool-define.test.ts` from `packages/opencode/`
 - **CLI build artifact size check**: after `bun run script/build.ts --single --skip-install` in `packages/opencode/`, use `du -h dist/*/*/bin/kilo` (scoped package output lives under `dist/@kilocode/`)
@@ -34,6 +34,7 @@ Before saying an implementation is ready, run the smallest relevant checks that 
 | CLI | From `packages/opencode/`: `bun run typecheck`, `bun test` or targeted `bun test ./path/to/file.test.ts` |
 | VS Code extension | From `packages/kilo-vscode/`: `bun run typecheck`, `bun run lint`, `bun run test:unit` or `bun run test` |
 | Extension build/package | From `packages/kilo-vscode/`: `bun run compile` or `bun run package` when touching build, packaging, SDK, or webview integration paths |
+| JetBrains plugin | From `packages/kilo-jetbrains/`: `./gradlew typecheck`, `./gradlew test`. Requires Java 21 — check first with `java -version`. Install via SDKMAN if missing: `sdk install java 21-tem && sdk use java 21-tem`. |
 | CI-only guards | Run affected guards documented above, such as `bun run knip`, `bun run check-kilocode-change`, `bun run script/check-opencode-annotations.ts`, or source link extraction |
 
 Never run root `bun test`; the root script prints `do not run tests from root` and exits with code 1. Use package-level tests instead.
@@ -53,8 +54,7 @@ Extension-specific settings should live in the Kilo extension settings, not defa
 
 ## Package Instructions
 
-- When a task primarily touches `packages/kilo-jetbrains/`, read `packages/kilo-jetbrains/AGENTS.md` before planning or editing.
-- For JetBrains Kotlin/Swing UI work, also apply `packages/kilo-jetbrains/.kilo/skills/jetbrains-ui-style/SKILL.md`.
+- When a task primarily touches `packages/kilo-jetbrains/`, read `packages/kilo-jetbrains/AGENTS.md` before planning or editing. It covers split-mode architecture, IntelliJ source lookup, threading fundamentals, UI guidelines, and session component architecture.
 
 ## Monorepo Structure
 
@@ -89,17 +89,6 @@ Prefer `const`.
 
 Good:
 
-### Naming Enforcement (Read This)
-
-THIS RULE IS MANDATORY FOR AGENT WRITTEN CODE.
-
-- Use single word names by default for new locals, params, and helper functions.
-- Multi-word names are allowed only when a single word would be unclear or ambiguous.
-- Do not introduce new camelCase compounds when a short single-word alternative is clear.
-- Before finishing edits, review touched lines and shorten newly introduced identifiers where possible.
-- Good short names to prefer: `pid`, `cfg`, `err`, `opts`, `dir`, `root`, `child`, `state`, `timeout`.
-- Examples to avoid unless truly required: `inputPID`, `existingClient`, `connectTimeout`, `workerPath`.
-
 ```ts
 const foo = condition ? 1 : 2
 ```
@@ -112,6 +101,17 @@ let foo
 if (condition) foo = 1
 else foo = 2
 ```
+
+### Naming Enforcement (Read This)
+
+THIS RULE IS MANDATORY FOR AGENT WRITTEN CODE.
+
+- Use single word names by default for new locals, params, and helper functions.
+- Multi-word names are allowed only when a single word would be unclear or ambiguous.
+- Do not introduce new camelCase compounds when a short single-word alternative is clear.
+- Before finishing edits, review touched lines and shorten newly introduced identifiers where possible.
+- Good short names to prefer: `pid`, `cfg`, `err`, `opts`, `dir`, `root`, `child`, `state`, `timeout`.
+- Examples to avoid unless truly required: `inputPID`, `existingClient`, `connectTimeout`, `workerPath`.
 
 ### Avoid else statements
 
@@ -223,12 +223,7 @@ PR descriptions should be 2-3 lines covering **what** changed and **why**. Focus
 
 ## GitHub Issues
 
-- When creating a GitHub issue for the VS Code extension or JetBrains plugin, use the repo's existing issue templates in `.github/ISSUE_TEMPLATE/`. Pick the matching template (`Bug report`, `Feature Request`, or `Question`) instead of opening a blank issue.
-- Do not add platform-specific title prefixes such as `[JetBrains]`, `[Jetbrains]`, `[JB]`, `[VS Code]`, `[VSCode]`, or similar. Use a plain, descriptive title.
-- Always add VS Code extension issues to the GitHub project `VS Code Extension`: https://github.com/orgs/Kilo-Org/projects/25
-- Always add JetBrains plugin issues to the GitHub project `Jetbrains Plugin`: https://github.com/orgs/Kilo-Org/projects/39
-- When using `gh`, prefer `gh issue create --template "..." --project "..."` with the matching project title.
-- If project assignment fails because `gh` is missing the required scope, run `gh auth refresh -s project` and retry.
+When creating or managing GitHub issues for the VS Code extension or JetBrains plugin via `gh`, load `.kilo/skills/gh-issues/SKILL.md`. It covers templates, project boards (`VS Code Extension`, `Jetbrains Plugin`), title conventions, and the `gh auth refresh -s project` recovery path.
 
 ## Fork Merge Process
 
@@ -262,50 +257,13 @@ The goal is to keep our diff from upstream as small as possible, making regular 
 
 ### Kilocode Change Markers
 
-To minimize merge conflicts when syncing with upstream, mark Kilo Code-specific changes in shared code with `kilocode_change` comments.
+When editing shared upstream files, mark Kilo-specific lines with `kilocode_change` comments so future merges can find them. The basic forms are:
 
-**Single line:**
+- Single line: `const value = 42 // kilocode_change`
+- Multi-line block: wrap with `// kilocode_change start` / `// kilocode_change end`
+- New file in a shared path: `// kilocode_change - new file` at the top
+- JSX/TSX: use `{/* kilocode_change */}` (and `{/* kilocode_change start */}` / `end`)
 
-```typescript
-const value = 42 // kilocode_change
-```
+Markers are NOT needed in paths that contain `kilocode` in the name (e.g. `packages/opencode/src/kilocode/`, `packages/opencode/test/kilocode/`) — these are entirely Kilo Code additions and won't conflict with upstream.
 
-**Multi-line:**
-
-```typescript
-// kilocode_change start
-const foo = 1
-const bar = 2
-// kilocode_change end
-```
-
-**New files:**
-
-```typescript
-// kilocode_change - new file
-```
-
-<!-- prettier-ignore -->
-**JSX/TSX (inside JSX templates):**
-
-<!-- prettier-ignore -->
-```tsx
-{/* kilocode_change */}
-```
-
-<!-- prettier-ignore -->
-```tsx
-{/* kilocode_change start */}
-<MyComponent />
-{/* kilocode_change end */}
-```
-
-#### When markers are NOT needed
-
-Code in these paths is Kilo Code-specific and does NOT need `kilocode_change` markers:
-
-- `packages/opencode/src/kilocode/` - All files in this directory
-- `packages/opencode/test/kilocode/` - All test files for kilocode
-- Any other path containing `kilocode` in filename or directory name
-
-These paths are entirely Kilo Code additions and won't conflict with upstream.
+For decision rules on when to keep changes inline vs. extract Kilo logic, marker placement guidance, and verification commands, load `.kilo/skills/kilocode-merge-minimizer/SKILL.md`.

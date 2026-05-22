@@ -8,10 +8,12 @@ import type { SessionPrompt } from "../session/prompt"
 import { Config } from "@/config/config"
 import { KiloTask } from "../kilocode/tool/task" // kilocode_change
 import { KiloCostPropagation } from "../kilocode/session/cost-propagation" // kilocode_change
-import { Effect, Schema } from "effect"
+import { KiloSessionProcessor } from "../kilocode/session/processor" // kilocode_change
+import { Effect, Exit, Schema } from "effect"
+import { EffectBridge } from "@/effect/bridge"
 
 export interface TaskPromptOps {
-  cancel(sessionID: SessionID): void
+  cancel(sessionID: SessionID): Effect.Effect<void>
   resolvePromptParts(template: string): Effect.Effect<SessionPrompt.PromptInput["parts"]>
   prompt(input: SessionPrompt.PromptInput): Effect.Effect<MessageV2.WithParts>
 }
@@ -62,12 +64,12 @@ export const TaskTool = Tool.define(
       KiloTask.validate(next, params.subagent_type)
       // kilocode_change end
 
-      const canTask = next.permission.some((rule) => rule.permission === id)
+      const canTask = KiloTask.nestedTask() // kilocode_change - Kilo disallows subagents spawning subagents
       const canTodo = next.permission.some((rule) => rule.permission === "todowrite")
 
+      const parent = yield* sessions.get(ctx.sessionID)
       // kilocode_change start — inherit edit/bash/MCP restrictions from calling agent
       const caller = yield* agent.get(ctx.agent)
-      const parent = yield* Effect.promise(() => Session.get(SessionID.make(ctx.sessionID)))
       const rules = KiloTask.inherited({ caller, session: parent, mcp: cfg.mcp })
       // kilocode_change end
 
@@ -81,6 +83,9 @@ export const TaskTool = Tool.define(
           parentID: ctx.sessionID,
           title: params.description + ` (@${next.name} subagent)`,
           permission: [
+            ...(parent.permission ?? []).filter(
+              (rule) => rule.permission === "external_directory" || rule.action === "deny",
+            ),
             ...(canTodo
               ? []
               : [
@@ -134,23 +139,26 @@ export const TaskTool = Tool.define(
 
       const ops = ctx.extra?.promptOps as TaskPromptOps
       if (!ops) return yield* Effect.fail(new Error("TaskTool requires promptOps in ctx.extra"))
+      const runCancel = yield* EffectBridge.make()
 
       const messageID = MessageID.ascending()
+      const cancel = ops.cancel(nextSession.id)
 
-      function cancel() {
-        ops.cancel(nextSession.id)
+      function onAbort() {
+        runCancel.fork(cancel)
       }
 
       return yield* Effect.acquireUseRelease(
         // kilocode_change start - snapshot child cost so we propagate only the delta on resume (#6321)
         Effect.gen(function* () {
-          ctx.abort.addEventListener("abort", cancel)
+          ctx.abort.addEventListener("abort", onAbort)
           return yield* KiloCostPropagation.childCost(sessions, nextSession.id)
         }),
         // kilocode_change end
         () =>
           Effect.gen(function* () {
             const parts = yield* ops.resolvePromptParts(params.prompt)
+            KiloSessionProcessor.markReviewTelemetry(parts, params.command) // kilocode_change - carry review command into child session telemetry
             const result = yield* ops.prompt({
               messageID,
               sessionID: nextSession.id,
@@ -185,12 +193,18 @@ export const TaskTool = Tool.define(
             }
           }),
         // kilocode_change start - propagate subagent cost delta to parent on every exit path (#6321)
-        (costBefore) =>
+        (costBefore, exit) =>
           Effect.gen(function* () {
-            ctx.abort.removeEventListener("abort", cancel)
-            const costAfter = yield* KiloCostPropagation.childCost(sessions, nextSession.id)
-            yield* KiloCostPropagation.propagate(sessions, ctx.sessionID, ctx.messageID, costAfter - costBefore)
-          }),
+            if (Exit.hasInterrupts(exit)) yield* cancel
+          }).pipe(
+            Effect.ensuring(
+              Effect.gen(function* () {
+                ctx.abort.removeEventListener("abort", onAbort)
+                const costAfter = yield* KiloCostPropagation.childCost(sessions, nextSession.id)
+                yield* KiloCostPropagation.propagate(sessions, ctx.sessionID, ctx.messageID, costAfter - costBefore)
+              }),
+            ),
+          ),
         // kilocode_change end
       )
     })

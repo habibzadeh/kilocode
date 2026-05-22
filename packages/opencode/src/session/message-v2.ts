@@ -23,6 +23,7 @@ import type { SystemError } from "bun"
 import type { Provider } from "@/provider/provider"
 import { ModelID, ProviderID } from "@/provider/schema"
 import { SessionNetwork } from "./network" // kilocode_change
+import { CodexAuthExpiredError } from "@/kilocode/provider/codex-refresh" // kilocode_change
 import { Effect, Schema, Types } from "effect"
 import { zod, ZodOverride } from "@/util/effect-zod"
 import { NonNegativeInt, withStatics } from "@/util/schema"
@@ -692,6 +693,17 @@ export const cursor = {
 
 // kilocode_change start - strip bloated metadata fields from stored parts to prevent multi-MB payloads
 // This handles both legacy data that was stored with full file contents and keeps the API response lean.
+function stripPatch(value: unknown) {
+  if (typeof value !== "string") return undefined
+  if (Buffer.byteLength(value) > Snapshot.MAX_DIFF_SIZE) return undefined
+  return value
+}
+
+function withPatch(value: unknown) {
+  const kept = stripPatch(value)
+  return kept ? { patch: kept } : {}
+}
+
 export function stripPartMetadata(part: Part): Part {
   // kilocode_change - exported for testing
   if (part.type !== "tool") return part
@@ -703,20 +715,41 @@ export function stripPartMetadata(part: Part): Part {
   let changed = false
   let next = meta
 
-  // Strip edit tool's filediff.before/after (full file contents)
-  if (meta.filediff && (meta.filediff.before || meta.filediff.after)) {
-    const { before, after, ...rest } = meta.filediff
-    next = { ...next, filediff: rest }
+  if (meta.diff !== undefined) {
+    const { diff, ...rest } = next
+    next = rest
     changed = true
   }
 
-  // Strip apply_patch tool's files[].before/after (full file contents per file)
-  if (Array.isArray(meta.files) && meta.files.length > 0 && meta.files[0]?.before !== undefined) {
+  // Strip edit/write tool filediff.before/after (full file contents) and cap patches.
+  if (meta.filediff) {
+    const { before, after, patch, ...rest } = meta.filediff
+    next = { ...next, filediff: { ...rest, ...withPatch(patch) } }
+    changed = true
+  }
+
+  // Strip apply_patch tool's files[].before/after (full file contents per file) and cap per-file patches.
+  if (Array.isArray(meta.files) && meta.files.length > 0) {
     next = {
       ...next,
       files: meta.files.map((f: Record<string, unknown>) => {
-        const { before, after, ...rest } = f
-        return rest
+        const { before, after, patch, diff, ...rest } = f
+        const kept = stripPatch(patch) ?? stripPatch(diff)
+        return { ...rest, ...(kept ? { patch: kept } : {}) }
+      }),
+    }
+    changed = true
+  }
+
+  if (Array.isArray(meta.results) && meta.results.length > 0) {
+    next = {
+      ...next,
+      results: meta.results.map((r: Record<string, unknown>) => {
+        const { diff, ...rest } = r
+        if (!r.filediff || typeof r.filediff !== "object") return rest
+        const fd = r.filediff as Record<string, unknown>
+        const { before, after, patch, ...file } = fd
+        return { ...rest, filediff: { ...file, ...withPatch(patch) } }
       }),
     }
     changed = true
@@ -843,7 +876,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
       return {
         type: "content",
         value: [
-          { type: "text", text: outputObject.text },
+          ...(outputObject.text ? [{ type: "text", text: outputObject.text }] : []),
           ...attachments.map((attachment) => ({
             type: "media",
             mediaType: attachment.mime,
@@ -925,15 +958,32 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
         role: "assistant",
         parts: [],
       }
+      // Anthropic adaptive thinking can persist assistant turns like:
+      // step-start, reasoning(signature), text(""), step-start,
+      // reasoning(signature). The empty text part is a structural separator,
+      // but it does not carry the signature metadata itself. Dropping it shifts
+      // signed thinking positions after step-start splitting/provider regrouping;
+      // keeping it as "" is filtered by the AI SDK and rejected by Anthropic.
+      // It is unclear whether this shape originates in our stream processing,
+      // a proxy, or a lower-level library, but preserving a non-empty separator
+      // here is the only safe replay point we have.
+      // Use a single space so the separator survives replay without changing
+      // the neighboring signed reasoning blocks. Bedrock-hosted Claude stores
+      // the same signature under the bedrock metadata namespace.
+      const hasSignedReasoning = msg.parts.some((part) => {
+        if (part.type !== "reasoning") return false
+        return part.metadata?.anthropic?.signature != null || part.metadata?.bedrock?.signature != null
+      })
       for (const part of msg.parts) {
-        // kilocode_change start - keep local UI warnings out of future prompts
-        if (part.type === "text" && !part.ignored)
-          // kilocode_change end
+        // kilocode_change - !part.ignored keeps local UI warnings out of future prompts
+        if (part.type === "text" && !part.ignored) {
+          const text = part.text === "" && hasSignedReasoning ? " " : part.text
           assistantMessage.parts.push({
             type: "text",
-            text: part.text,
+            text,
             ...(differentModel ? {} : { providerMetadata: part.metadata }),
           })
+        }
         if (part.type === "step-start")
           assistantMessage.parts.push({
             type: "step-start",
@@ -1011,10 +1061,18 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
             })
         }
         if (part.type === "reasoning") {
+          if (differentModel) {
+            if (part.text.trim().length > 0)
+              assistantMessage.parts.push({
+                type: "text",
+                text: part.text,
+              })
+            continue
+          }
           assistantMessage.parts.push({
             type: "reasoning",
             text: part.text,
-            ...(differentModel ? {} : { providerMetadata: part.metadata }),
+            providerMetadata: part.metadata,
           })
         }
       }
@@ -1171,6 +1229,32 @@ export function filterCompacted(msgs: Iterable<WithParts>) {
       completed.add(msg.info.parentID)
   }
   result.reverse()
+  const compactionIndex = result.findLastIndex(
+    (msg) =>
+      msg.info.role === "user" &&
+      msg.parts.some((item): item is CompactionPart => item.type === "compaction" && item.tail_start_id !== undefined),
+  )
+  const compaction = result[compactionIndex]
+  const part = compaction?.parts.find(
+    (item): item is CompactionPart => item.type === "compaction" && item.tail_start_id !== undefined,
+  )
+  const summaryIndex = compaction
+    ? result.findIndex(
+        (msg, index) =>
+          index > compactionIndex &&
+          msg.info.role === "assistant" &&
+          msg.info.summary &&
+          msg.info.parentID === compaction.info.id,
+      )
+    : -1
+  const tailIndex = part?.tail_start_id ? result.findIndex((msg) => msg.info.id === part.tail_start_id) : -1
+  if (tailIndex >= 0 && tailIndex < compactionIndex && summaryIndex > compactionIndex) {
+    return [
+      ...result.slice(compactionIndex, summaryIndex + 1),
+      ...result.slice(tailIndex, compactionIndex),
+      ...result.slice(summaryIndex + 1),
+    ]
+  }
   return result
 }
 
@@ -1200,6 +1284,14 @@ export function fromError(
         },
         { cause: e },
       ).toObject()
+    case e instanceof CodexAuthExpiredError: // kilocode_change start
+      return new AuthError(
+        {
+          providerID: "openai",
+          message: e.message,
+        },
+        { cause: e },
+      ).toObject() // kilocode_change end
     case SessionNetwork.disconnected(e): // kilocode_change start
       return new APIError(
         {
