@@ -94,7 +94,6 @@ import { session as banner } from "@/kilocode/cli/logo" // kilocode_change
 
 import { formatMarkdownTables } from "../../util/markdown" // kilocode_change
 import { bell } from "@/kilocode/bell" // kilocode_change
-import { SessionIndexing } from "@/kilocode/components/session-indexing" // kilocode_change
 import { submitFeedback } from "@/kilocode/cli/cmd/tui/feedback" // kilocode_change
 import { getScrollAcceleration } from "../../util/scroll"
 import { TuiPluginRuntime } from "@/cli/cmd/tui/plugin/runtime"
@@ -1446,9 +1445,6 @@ export function Session() {
               {/* kilocode_change end */}
             </box>
           </Show>
-          {/* kilocode_change start */}
-          <SessionIndexing />
-          {/* kilocode_change end */}
           <Toast />
         </box>
         <Show when={sidebarVisible()}>
