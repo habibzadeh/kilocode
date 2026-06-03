@@ -4,6 +4,12 @@ export const dict = {
   "agentManager.sidebar.expand": "Показати бічну панель",
   "agentManager.section.worktrees": "РОБОЧІ ДЕРЕВА",
   "agentManager.section.sessions": "СЕСІЇ",
+  "agentManager.section.cloudAgents": "CLOUD AGENTS",
+  "agentManager.cloud.loading": "Завантаження Cloud Agents...",
+  "agentManager.cloud.empty": "Cloud Agents не знайдено.",
+  "agentManager.cloud.failed": "Не вдалося завантажити Cloud Agents.",
+  "agentManager.cloud.retry": "Повторити",
+  "agentManager.cloud.unsupportedAction": "Ця дія не підтримується для Cloud Agents.",
   "agentManager.notGitRepo": "Не є git-репозиторієм",
 
   "agentManager.worktree.settings": "Налаштування робочого дерева",

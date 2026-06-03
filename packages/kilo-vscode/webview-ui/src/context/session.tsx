@@ -232,6 +232,7 @@ interface SessionContextValue {
     files?: FileAttachment[],
     draftID?: string,
     context?: string,
+    agent?: string,
   ) => void
   sendCommand: (
     command: string,
@@ -264,7 +265,12 @@ interface SessionContextValue {
   exportSessionTranscript: (id: string) => void
   syncSession: (sessionID: string) => void
 
-  // Cloud session preview
+  // Live cloud session attachment
+  attachCloudSession: (session: SessionInfo) => void
+  detachCloudSession: (sessionID: string) => void
+  isCloudSession: (sessionID?: string) => boolean
+
+  // Historical cloud session preview
   cloudPreviewId: Accessor<string | null>
   selectCloudSession: (cloudSessionId: string) => void
   draftSessionID: Accessor<string | undefined>
@@ -404,7 +410,8 @@ export const SessionProvider: ParentComponent = (props) => {
   // Pending agent selection for before a session exists
   const [pendingAgentSelection, setPendingAgentSelection] = createSignal<string | null>(null)
 
-  // Cloud session preview state
+  // Cloud session state
+  const retainedCloud = new Set<string>()
   const [cloudPreviewId, setCloudPreviewId] = createSignal<string | null>(null)
   const [hiddenErrors, setHiddenErrors] = createSignal<Set<string>>(new Set())
 
@@ -1576,6 +1583,20 @@ export const SessionProvider: ParentComponent = (props) => {
     resetTodos(session.id, next)
   }
 
+  function attachCloudSession(session: SessionInfo) {
+    retainedCloud.add(session.id)
+    handleSessionUpdated(session)
+  }
+
+  function detachCloudSession(sessionID: string) {
+    retainedCloud.delete(sessionID)
+    handleSessionDeleted(sessionID)
+  }
+
+  function isCloudSession(sessionID = currentSessionID()) {
+    return !!sessionID && retainedCloud.has(sessionID)
+  }
+
   function handleSessionsLoaded(loaded: SessionInfo[], preserve?: string[]) {
     const kept = preserve?.length ? new Set(preserve) : undefined
     batch(() => {
@@ -1589,6 +1610,7 @@ export const SessionProvider: ParentComponent = (props) => {
         produce((sessions) => {
           for (const id of Object.keys(sessions)) {
             if (id.startsWith("cloud:")) continue
+            if (retainedCloud.has(id)) continue
             if (kept?.has(id)) continue
             if (!ids.has(id)) delete sessions[id]
           }
@@ -1894,6 +1916,7 @@ export const SessionProvider: ParentComponent = (props) => {
     files?: FileAttachment[],
     draftID?: string,
     context?: string,
+    override?: string,
   ) {
     if (!server.isConnected()) {
       console.warn("[Kilo New] Cannot send message: not connected")
@@ -1921,10 +1944,12 @@ export const SessionProvider: ParentComponent = (props) => {
     }
 
     const sid = currentSessionID()
-    const suggestion = scopedSuggestions(sid)[0]
-    if (suggestion) dismissSuggestion(suggestion.id)
-    for (const q of scopedQuestions(sid)) {
-      rejectQuestion(q.id)
+    if (!isCloudSession(sid)) {
+      const suggestion = scopedSuggestions(sid)[0]
+      if (suggestion) dismissSuggestion(suggestion.id)
+      for (const q of scopedQuestions(sid)) {
+        rejectQuestion(q.id)
+      }
     }
     if (sid) {
       clearClose(sid)
@@ -1932,7 +1957,7 @@ export const SessionProvider: ParentComponent = (props) => {
     }
 
     const scope = draftID ?? sid
-    const agent = promptAgent(scope)
+    const agent = override ?? promptAgent(scope)
 
     vscode.postMessage({
       type: "sendMessage",
@@ -1958,6 +1983,7 @@ export const SessionProvider: ParentComponent = (props) => {
     draftID?: string,
     context?: string,
   ) {
+    if (isCloudSession()) return
     if (!server.isConnected()) {
       console.warn("[Kilo New] Cannot send command: not connected")
       return
@@ -2030,6 +2056,7 @@ export const SessionProvider: ParentComponent = (props) => {
   }
 
   function compact() {
+    if (isCloudSession()) return
     if (!server.isConnected()) {
       console.warn("[Kilo New] Cannot compact: not connected")
       return
@@ -2059,6 +2086,7 @@ export const SessionProvider: ParentComponent = (props) => {
     // Resolve sessionID from the stored permission request
     const permission = permissions().find((p) => p.id === permissionId)
     const sessionID = permission?.sessionID ?? currentSessionID() ?? ""
+    if (isCloudSession(sessionID)) return
 
     // Mark as responding so the UI disables the buttons.
     // The permission is removed when the server confirms via permission.replied SSE.
@@ -2096,6 +2124,7 @@ export const SessionProvider: ParentComponent = (props) => {
     clearQuestionError(requestID)
     const question = questions().find((item) => item.id === requestID)
     const sessionID = question?.sessionID ?? currentSessionID() ?? ""
+    if (isCloudSession(sessionID)) return
     vscode.postMessage({
       type: "questionReply",
       requestID,
@@ -2108,6 +2137,7 @@ export const SessionProvider: ParentComponent = (props) => {
     clearQuestionError(requestID)
     const question = questions().find((item) => item.id === requestID)
     const sessionID = question?.sessionID ?? currentSessionID() ?? ""
+    if (isCloudSession(sessionID)) return
     vscode.postMessage({
       type: "questionReject",
       requestID,
@@ -2117,8 +2147,9 @@ export const SessionProvider: ParentComponent = (props) => {
 
   function acceptSuggestion(requestID: string, index: number) {
     clearSuggestionError(requestID)
-    setRespondingSuggestions((prev) => new Set(prev).add(requestID))
     const sid = suggestions().find((s) => s.id === requestID)?.sessionID ?? currentSessionID() ?? ""
+    if (isCloudSession(sid)) return
+    setRespondingSuggestions((prev) => new Set(prev).add(requestID))
     vscode.postMessage({
       type: "suggestionAccept",
       requestID,
@@ -2129,8 +2160,9 @@ export const SessionProvider: ParentComponent = (props) => {
 
   function dismissSuggestion(requestID: string) {
     clearSuggestionError(requestID)
-    setRespondingSuggestions((prev) => new Set(prev).add(requestID))
     const sid = suggestions().find((s) => s.id === requestID)?.sessionID ?? currentSessionID() ?? ""
+    if (isCloudSession(sid)) return
+    setRespondingSuggestions((prev) => new Set(prev).add(requestID))
     vscode.postMessage({
       type: "suggestionDismiss",
       requestID,
@@ -2216,6 +2248,7 @@ export const SessionProvider: ParentComponent = (props) => {
   }
 
   function deleteSession(id: string) {
+    if (isCloudSession(id)) return
     if (!server.isConnected()) {
       console.warn("[Kilo New] Cannot delete session: not connected")
       return
@@ -2237,6 +2270,7 @@ export const SessionProvider: ParentComponent = (props) => {
   }
 
   function renameSession(id: string, title: string) {
+    if (isCloudSession(id)) return
     if (!server.isConnected()) {
       console.warn("[Kilo New] Cannot rename session: not connected")
       return
@@ -2245,6 +2279,7 @@ export const SessionProvider: ParentComponent = (props) => {
   }
 
   function exportSessionTranscript(id: string) {
+    if (isCloudSession(id)) return
     if (!server.isConnected()) {
       console.warn("[Kilo New] Cannot export session transcript: not connected")
       return
@@ -2331,7 +2366,7 @@ export const SessionProvider: ParentComponent = (props) => {
 
   function revertSession(messageID: string, partID?: string) {
     const id = currentSessionID()
-    if (!id) return
+    if (!id || isCloudSession(id)) return
     clearClose(id)
     // Restore the reverted user message's prompt text into the input.
     // Dispatch as a window message so PromptInput picks it up via onMessage.
@@ -2348,13 +2383,14 @@ export const SessionProvider: ParentComponent = (props) => {
 
   function unrevertSession() {
     const id = currentSessionID()
-    if (!id) return
+    if (!id || isCloudSession(id)) return
     // Clear the prompt input on full redo (matching TUI/desktop behavior)
     window.postMessage({ type: "setChatBoxMessage", text: "" }, "*")
     vscode.postMessage({ type: "unrevertSession", sessionID: id })
   }
 
   function syncSession(sessionID: string) {
+    if (isCloudSession() || isCloudSession(sessionID)) return
     vscode.postMessage({ type: "syncSession", sessionID, parentSessionID: currentSessionID() })
   }
 
@@ -2554,6 +2590,9 @@ export const SessionProvider: ParentComponent = (props) => {
     renameSession,
     exportSessionTranscript,
     syncSession,
+    attachCloudSession,
+    detachCloudSession,
+    isCloudSession,
     cloudPreviewId,
     selectCloudSession,
     draftSessionID,

@@ -559,6 +559,20 @@ export interface RequestStateMessage {
   type: "agentManager.requestState"
 }
 
+export interface AgentManagerRequestCloudSessionsMessage {
+  type: "agentManager.requestCloudSessions"
+}
+
+export interface AgentManagerOpenCloudSessionMessage {
+  type: "agentManager.openCloudSession"
+  sessionId: string
+}
+
+export interface AgentManagerCloseCloudSessionMessage {
+  type: "agentManager.closeCloudSession"
+  sessionId: string
+}
+
 // Configure worktree setup script
 export interface ConfigureSetupScriptRequest {
   type: "agentManager.configureSetupScript"
@@ -1139,6 +1153,9 @@ export type WebviewMessage =
   | CreateWorktreeSessionRequest
   | RequestNotificationsMessage
   | DismissNotificationMessage
+  | AgentManagerRequestCloudSessionsMessage
+  | AgentManagerOpenCloudSessionMessage
+  | AgentManagerCloseCloudSessionMessage
   | CreateWorktreeRequest
   | DeleteWorktreeRequest
   | RemoveStaleWorktreeRequest

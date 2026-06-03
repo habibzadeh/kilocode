@@ -136,6 +136,25 @@ interface StateMessage {
   runScriptPath?: string
 }
 
+export interface CloudSessionSummary {
+  id: string
+  title?: string
+  createdAt: string
+  updatedAt: string
+}
+
+interface CloudSessionsMessage {
+  type: "agentManager.cloudSessions"
+  status: "loading" | "ready" | "error"
+  sessions: CloudSessionSummary[]
+  error?: string
+}
+
+interface CloudSessionDeletedMessage {
+  type: "agentManager.cloudSessionDeleted"
+  sessionId: string
+}
+
 // ---------------------------------------------------------------------------
 // Terminal messages
 // ---------------------------------------------------------------------------
@@ -292,6 +311,8 @@ export type AgentManagerOutMessage =
   | WorktreeSetupMessage
   | SessionMetaMessage
   | StateMessage
+  | CloudSessionsMessage
+  | CloudSessionDeletedMessage
   | ErrorOutMessage
   | SessionAddedMessage
   | SessionForkedMessage
@@ -318,6 +339,20 @@ export type AgentManagerOutMessage =
 // ---------------------------------------------------------------------------
 // Webview → Extension messages (onMessage)
 // ---------------------------------------------------------------------------
+
+interface RequestCloudSessionsIn {
+  type: "agentManager.requestCloudSessions"
+}
+
+interface OpenCloudSessionIn {
+  type: "agentManager.openCloudSession"
+  sessionId: string
+}
+
+interface CloseCloudSessionIn {
+  type: "agentManager.closeCloudSession"
+  sessionId: string
+}
 
 interface CreateWorktreeIn {
   type: "agentManager.createWorktree"
@@ -718,6 +753,9 @@ interface TerminalResizeIn {
 
 /** All messages the Agent Manager expects from the webview (onMessage input). */
 export type AgentManagerInMessage =
+  | RequestCloudSessionsIn
+  | OpenCloudSessionIn
+  | CloseCloudSessionIn
   | CreateWorktreeIn
   | DeleteWorktreeIn
   | RemoveStaleWorktreeIn

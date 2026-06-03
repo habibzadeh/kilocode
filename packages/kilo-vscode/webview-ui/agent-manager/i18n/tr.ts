@@ -4,6 +4,12 @@ export const dict = {
   "agentManager.sidebar.expand": "Kenar çubuğunu göster",
   "agentManager.section.worktrees": "WORKTREE'LER",
   "agentManager.section.sessions": "OTURUMLAR",
+  "agentManager.section.cloudAgents": "CLOUD AGENTS",
+  "agentManager.cloud.loading": "Cloud Agents yükleniyor...",
+  "agentManager.cloud.empty": "Cloud Agents bulunamadı.",
+  "agentManager.cloud.failed": "Cloud Agents yüklenemedi.",
+  "agentManager.cloud.retry": "Yeniden dene",
+  "agentManager.cloud.unsupportedAction": "Bu işlem Cloud Agents için desteklenmiyor.",
   "agentManager.notGitRepo": "Bir git deposu değil",
 
   "agentManager.worktree.settings": "Worktree ayarları",

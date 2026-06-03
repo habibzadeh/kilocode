@@ -34,6 +34,7 @@ import { restoreWorktrees } from "./state-recovery"
 import { diffSummary as localDiffSummary, diffFile as localDiffFile } from "./local-diff"
 import { parseToolRequest, startFromTool, type ToolRequest } from "./tool-start"
 import { stopSessionProcesses } from "../kilo-provider/background-process"
+import { CloudAgentController } from "./cloud-agent-controller"
 
 import { buildKeybindingMap } from "./format-keybinding"
 import { resolveVersionModels, buildInitialMessages, type CreatedVersion } from "./multi-version"
@@ -61,6 +62,7 @@ export class AgentManagerProvider implements Disposable {
   private importer: WorktreeImporter
   private terminalManager: SessionTerminalManager
   private terminalRouter: TerminalRouter
+  private cloud: CloudAgentController
   private run: RunController
   private stateReady: Promise<void> | undefined
   private statsPoller: GitStatsPoller
@@ -94,6 +96,11 @@ export class AgentManagerProvider implements Disposable {
       getWorktreePath: (id) => this.getStateManager()?.getWorktree(id)?.path,
       log: (...args) => this.log("[XTerm]", ...args),
       post: (msg) => this.postToWebview(msg),
+    })
+    this.cloud = new CloudAgentController({
+      getLocalClient: () => this.connectionService.getClient(),
+      post: (msg) => this.postToWebview(msg as AgentManagerOutMessage),
+      log: (...args) => this.log("[CloudAgent]", ...args),
     })
     this.run = new RunController({
       root: () => this.getRoot(),
@@ -213,10 +220,12 @@ export class AgentManagerProvider implements Disposable {
   private attachPanel(ctx: PanelContext): void {
     if (this.panel) {
       this.log("Disposing previous panel before attaching new one")
+      this.cloud.detach()
       this.panel.dispose()
       this.panel = undefined
     }
     this.panel = ctx
+    this.cloud.attach()
 
     this.statsPoller.setVisible(ctx.visible)
     this.onVisibilityChange?.(ctx.visible)
@@ -237,6 +246,7 @@ export class AgentManagerProvider implements Disposable {
       // have already replaced us via attachPanel.
       if (this.panel === ctx) {
         this.log("Panel disposed")
+        this.cloud.detach()
         this.statsPoller.stop()
         this.prBridge.poller.stop()
         this.diffs.stop()
@@ -326,6 +336,7 @@ export class AgentManagerProvider implements Disposable {
 
   private async onMessage(msg: Record<string, unknown>): Promise<Record<string, unknown> | null> {
     if (this.prBridge.handleMessage(msg)) return null
+    if (this.cloud.handle(msg)) return null
     if (msg.type === "requestFileSearch" && typeof msg.sessionID !== "string" && this.activeSessionId) {
       return { ...msg, sessionID: this.activeSessionId }
     }
@@ -1782,6 +1793,7 @@ export class AgentManagerProvider implements Disposable {
     this.unsubTool?.()
     this.connectionService.unregisterFocused("agent-manager")
     this.connectionService.registerOpen("agent-manager", [])
+    this.cloud.dispose()
     this.diffs.stop()
     this.statsPoller.stop()
     this.gitOps.dispose()

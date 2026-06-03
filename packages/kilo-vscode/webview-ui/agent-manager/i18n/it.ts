@@ -4,6 +4,12 @@ export const dict = {
   "agentManager.sidebar.expand": "Mostra barra laterale",
   "agentManager.section.worktrees": "WORKTREE",
   "agentManager.section.sessions": "SESSIONI",
+  "agentManager.section.cloudAgents": "CLOUD AGENTS",
+  "agentManager.cloud.loading": "Caricamento dei Cloud Agents...",
+  "agentManager.cloud.empty": "Nessun Cloud Agent trovato.",
+  "agentManager.cloud.failed": "Caricamento dei Cloud Agents non riuscito.",
+  "agentManager.cloud.retry": "Riprova",
+  "agentManager.cloud.unsupportedAction": "Questa azione non è supportata per i Cloud Agents.",
   "agentManager.notGitRepo": "Non è una repository git",
 
   "agentManager.worktree.settings": "Impostazioni worktree",

@@ -15,6 +15,7 @@ import type { KilocodeNotification, ProfileData } from "./profile"
 import type {
   AgentManagerApplyWorktreeDiffConflict,
   AgentManagerApplyWorktreeDiffStatus,
+  AgentManagerCloudSessionSummary,
   BranchInfo,
   ContinueInWorktreeStatus,
   ExternalWorktreeInfo,
@@ -562,6 +563,18 @@ export interface AgentManagerStateMessage {
   runScriptPath?: string
 }
 
+export interface AgentManagerCloudSessionsMessage {
+  type: "agentManager.cloudSessions"
+  status: "loading" | "ready" | "error"
+  sessions: AgentManagerCloudSessionSummary[]
+  error?: string
+}
+
+export interface AgentManagerCloudSessionDeletedMessage {
+  type: "agentManager.cloudSessionDeleted"
+  sessionId: string
+}
+
 // ---------------------------------------------------------------------------
 // Agent Manager terminal messages
 // ---------------------------------------------------------------------------
@@ -995,6 +1008,8 @@ export type ExtensionMessage =
   | AgentManagerSessionAddedMessage
   | AgentManagerSessionForkedMessage
   | AgentManagerStateMessage
+  | AgentManagerCloudSessionsMessage
+  | AgentManagerCloudSessionDeletedMessage
   | AgentManagerRunStatusMessage
   | AgentManagerKeybindingsMessage
   | AutoApproveStateMessage

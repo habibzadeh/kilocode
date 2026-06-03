@@ -911,15 +911,23 @@ export const ModelSelectorBase: Component<ModelSelectorBaseProps> = (props) => {
 
 interface ModelSelectorProps {
   sessionID?: Accessor<string | undefined>
+  providerID?: string
 }
 
 export const ModelSelector: Component<ModelSelectorProps> = (props) => {
+  const provider = useProvider()
   const session = useSession()
   const id = () => props.sessionID?.()
+  const models = createMemo(() => {
+    if (!props.providerID) return undefined
+    return provider.models().filter((model) => model.providerID === props.providerID)
+  })
 
   return (
     <ModelSelectorBase
       value={session.selected(id())}
+      models={models()}
+      favorites={props.providerID ? false : undefined}
       onSelect={(providerID, modelID) => {
         session.selectModel(providerID, modelID, id())
       }}

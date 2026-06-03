@@ -15,6 +15,7 @@ import { DropdownMenu } from "@kilocode/kilo-ui/dropdown-menu"
 import { TaskHeader } from "./TaskHeader"
 import { MessageList } from "./MessageList"
 import { PromptInput } from "./PromptInput"
+import { CloudPromptInput } from "./CloudPromptInput"
 import { PermissionDock } from "./PermissionDock"
 import { StartupErrorBanner } from "./StartupErrorBanner"
 import { useSession } from "../../context/session"
@@ -29,6 +30,7 @@ interface ChatViewProps {
   onShowHistory?: () => void
   onForkMessage?: (sessionId: string, messageId: string) => void
   readonly?: boolean
+  cloud?: boolean
   /** When true, show the "Continue in Worktree" button. Defaults to true in the sidebar. */
   continueInWorktree?: boolean
   promptBoxId?: string
@@ -76,7 +78,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   const suggesting = () => isSuggesting(blocked(), familySuggestions().length)
   // Session is busy only because a question tool call is pending — prompt should behave as idle
   const questioning = () => isQuestioning(blocked(), familyQuestions().length)
-  const dock = () => !props.readonly || !!permissionRequest()
+  const dock = () => !props.readonly || (!props.cloud && !!permissionRequest())
 
   // When a bottom-dock permission disappears while the session is busy,
   // the scroll container grows taller. Dispatch a custom event so MessageList can
@@ -190,11 +192,12 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     vscode.postMessage({ type: "agentManager.requestRepoInfo" })
   })
 
-  const canStartSession = (hasChat: boolean) => hasChat
+  const canStartSession = (hasChat: boolean) => hasChat && !props.cloud
 
-  const canStartWorktree = () => isSidebar() && server.gitInstalled()
+  const canStartWorktree = () => !props.cloud && isSidebar() && server.gitInstalled()
 
-  const canMoveToWorktree = (hasChat: boolean) => hasChat && canContinueInWorktree() && server.gitInstalled()
+  const canMoveToWorktree = (hasChat: boolean) =>
+    hasChat && !props.cloud && canContinueInWorktree() && server.gitInstalled()
 
   const hasActions = (hasChat: boolean) => canStartSession(hasChat) || canStartWorktree() || canMoveToWorktree(hasChat)
 
@@ -308,26 +311,26 @@ export const ChatView: Component<ChatViewProps> = (props) => {
 
   return (
     <div class="chat-view">
-      <TaskHeader readonly={props.readonly} />
+      <TaskHeader readonly={props.readonly || props.cloud} />
       <div class="chat-messages-wrapper">
         <div class="chat-messages">
           <MessageList
-            onSelectSession={props.onSelectSession}
-            onShowHistory={props.onShowHistory}
-            onForkMessage={props.onForkMessage}
-            questions={standaloneQuestions}
-            suggestions={standaloneSuggestions}
-            readonly={props.readonly}
+            onSelectSession={props.cloud ? undefined : props.onSelectSession}
+            onShowHistory={props.cloud ? undefined : props.onShowHistory}
+            onForkMessage={props.cloud ? undefined : props.onForkMessage}
+            questions={props.cloud ? undefined : standaloneQuestions}
+            suggestions={props.cloud ? undefined : standaloneSuggestions}
+            readonly={props.readonly || props.cloud}
           />
         </div>
       </div>
 
       <Show when={dock()}>
         <div class="chat-input">
-          <Show when={server.connectionState() === "error" && server.errorMessage()}>
+          <Show when={!props.cloud && server.connectionState() === "error" && server.errorMessage()}>
             <StartupErrorBanner errorMessage={server.errorMessage()!} errorDetails={server.errorDetails()!} />
           </Show>
-          <Show when={permissionRequest()} keyed>
+          <Show when={!props.cloud && permissionRequest()} keyed>
             {(perm) => (
               <PermissionDock
                 request={perm}
@@ -340,13 +343,20 @@ export const ChatView: Component<ChatViewProps> = (props) => {
             {renderActions(hasMessages())}
           </Show>
           <Show when={!props.readonly}>
-            <PromptInput
-              blocked={blocked}
-              suggesting={suggesting}
-              questioning={questioning}
-              boxId={props.promptBoxId}
-              pendingSessionID={props.pendingSessionID}
-            />
+            <Show
+              when={props.cloud}
+              fallback={
+                <PromptInput
+                  blocked={blocked}
+                  suggesting={suggesting}
+                  questioning={questioning}
+                  boxId={props.promptBoxId}
+                  pendingSessionID={props.pendingSessionID}
+                />
+              }
+            >
+              <CloudPromptInput boxId={props.promptBoxId} />
+            </Show>
           </Show>
         </div>
       </Show>

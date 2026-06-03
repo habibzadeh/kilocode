@@ -313,6 +313,43 @@ describe("Agent Manager Provider — onMessage routing", () => {
     expect(text).not.toContain("agentManager.requestState")
   })
 
+  it("routes cloud messages before context and local routing", () => {
+    const text = body("onMessage")
+    const cloud = text.indexOf("this.cloud.handle(msg)")
+    const context = text.indexOf("this.contextMessage(msg)")
+    const worktree = text.indexOf("this.onWorktreeMessage(m)")
+    const session = text.indexOf("this.onSessionMessage(m, msg)")
+
+    expect(cloud, "cloud handler must exist").toBeGreaterThan(-1)
+    expect(context, "context routing must exist").toBeGreaterThan(-1)
+    expect(worktree, "worktree routing must exist").toBeGreaterThan(-1)
+    expect(session, "session routing must exist").toBeGreaterThan(-1)
+    expect(cloud, "cloud messages must be consumed before context routing").toBeLessThan(context)
+    expect(cloud, "cloud messages must be consumed before worktree routing").toBeLessThan(worktree)
+    expect(cloud, "cloud messages must be consumed before session routing").toBeLessThan(session)
+  })
+
+  it("cloud controller follows panel and provider lifecycle", () => {
+    const attach = body("attachPanel")
+    const existing = attach.indexOf("if (this.panel)")
+    const replace = attach.indexOf("this.cloud.detach()", existing)
+    const panel = attach.indexOf("this.panel = ctx")
+    const connect = attach.indexOf("this.cloud.attach()")
+    const callback = attach.indexOf("ctx.onDidDispose")
+    const active = attach.indexOf("if (this.panel === ctx)", callback)
+    const detach = attach.indexOf("this.cloud.detach()", active)
+    const dispose = body("disposeAsync")
+
+    expect(existing, "existing-panel guard must exist").toBeGreaterThan(-1)
+    expect(replace, "replacing a panel must detach cloud handling").toBeGreaterThan(existing)
+    expect(panel, "panel assignment must exist").toBeGreaterThan(replace)
+    expect(connect, "new panel must attach cloud handling").toBeGreaterThan(panel)
+    expect(callback, "panel disposal hook must exist").toBeGreaterThan(connect)
+    expect(active, "panel disposal must guard the active panel").toBeGreaterThan(callback)
+    expect(detach, "active panel disposal must detach cloud handling").toBeGreaterThan(active)
+    expect(dispose).toContain("this.cloud.dispose()")
+  })
+
   // -- onDeleteWorktree invariants -------------------------------------------
 
   /**
