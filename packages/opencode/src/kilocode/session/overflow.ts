@@ -1,7 +1,13 @@
 import type { Config } from "@/config/config"
 import type { Provider } from "@/provider/provider"
+import type { MessageV2 } from "@/session/message-v2"
 
 export namespace KiloSessionOverflow {
+  export function count(tokens: MessageV2.Assistant["tokens"]) {
+    const total = tokens.input + tokens.output + tokens.reasoning + tokens.cache.read + tokens.cache.write
+    return total || tokens.total || 0
+  }
+
   export function limit(input: { cfg: Config.Info; model: Provider.Model; usable: number }) {
     const percent = input.cfg.compaction?.threshold_percent
     if (typeof percent !== "number") return input.usable
