@@ -1124,6 +1124,56 @@ describe("tool.shell abort", () => {
     })
   }, 15_000)
 
+  // kilocode_change start
+  test("caps requested and default timeouts from the environment", async () => {
+    const max = process.env.KILO_COMMAND_TIMEOUT_MAX_MS
+    const msg = process.env.KILO_COMMAND_TIMEOUT_MAX_MS_MESSAGE
+    process.env.KILO_COMMAND_TIMEOUT_MAX_MS = "500"
+    process.env.KILO_COMMAND_TIMEOUT_MAX_MS_MESSAGE = "You're running in a sandbox with a fixed timeout."
+
+    try {
+      await WithInstance.provide({
+        directory: projectRoot,
+        fn: async () => {
+          const bash = await initShell()
+          const explicit = await Effect.runPromise(
+            bash.execute(
+              {
+                command: `echo explicit && sleep 60`,
+                description: "Explicit cap test",
+                timeout: 30_000,
+              },
+              ctx,
+            ),
+          )
+          const fallback = await Effect.runPromise(
+            bash.execute(
+              {
+                command: `echo fallback && sleep 60`,
+                description: "Default cap test",
+              },
+              ctx,
+            ),
+          )
+
+          for (const result of [explicit, fallback]) {
+            expect(result.output).toContain("environment timeout 500 ms")
+            expect(result.output).toContain("You're running in a sandbox with a fixed timeout.")
+            expect(result.output).not.toContain("retry with a larger timeout value in milliseconds")
+          }
+          expect(explicit.output).toContain("explicit")
+          expect(fallback.output).toContain("fallback")
+        },
+      })
+    } finally {
+      if (max === undefined) delete process.env.KILO_COMMAND_TIMEOUT_MAX_MS
+      else process.env.KILO_COMMAND_TIMEOUT_MAX_MS = max
+      if (msg === undefined) delete process.env.KILO_COMMAND_TIMEOUT_MAX_MS_MESSAGE
+      else process.env.KILO_COMMAND_TIMEOUT_MAX_MS_MESSAGE = msg
+    }
+  }, 30_000)
+  // kilocode_change end
+
   test.skipIf(process.platform === "win32")("captures stderr in output", async () => {
     await WithInstance.provide({
       directory: projectRoot,

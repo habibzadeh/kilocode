@@ -1,8 +1,10 @@
 import { NodeFileSystem } from "@effect/platform-node"
 import { FetchHttpClient } from "effect/unstable/http"
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process" // kilocode_change - fake exited shell with pending output drain
 import { afterEach, expect, mock, spyOn } from "bun:test" // kilocode_change - spy on review telemetry
 import { Telemetry } from "@kilocode/kilo-telemetry" // kilocode_change - assert review command telemetry
-import { Cause, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Effect, Exit, Fiber, Layer, Stream } from "effect" // kilocode_change - delay fake shell output stream
+import * as Sink from "effect/Sink" // kilocode_change - fake shell stdin sink
 import path from "path"
 import { fileURLToPath } from "url"
 import { NamedError } from "@opencode-ai/core/util/error"
@@ -103,7 +105,29 @@ function withSh<A, E, R>(fx: () => Effect.Effect<A, E, R>) {
         Shell.preferred.reset()
       }),
   )
+} // kilocode_change - keep annotation guard context beside timeout cap setup
+
+// kilocode_change start
+function withCap<A, E, R>(fx: () => Effect.Effect<A, E, R>) {
+  return Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const max = process.env.KILO_COMMAND_TIMEOUT_MAX_MS
+      const msg = process.env.KILO_COMMAND_TIMEOUT_MAX_MS_MESSAGE
+      process.env.KILO_COMMAND_TIMEOUT_MAX_MS = "500"
+      process.env.KILO_COMMAND_TIMEOUT_MAX_MS_MESSAGE = "You're running in a sandbox with a fixed timeout."
+      return { max, msg }
+    }),
+    () => fx(),
+    (prev) =>
+      Effect.sync(() => {
+        if (prev.max === undefined) delete process.env.KILO_COMMAND_TIMEOUT_MAX_MS
+        else process.env.KILO_COMMAND_TIMEOUT_MAX_MS = prev.max
+        if (prev.msg === undefined) delete process.env.KILO_COMMAND_TIMEOUT_MAX_MS_MESSAGE
+        else process.env.KILO_COMMAND_TIMEOUT_MAX_MS_MESSAGE = prev.msg
+      }),
+  )
 }
+// kilocode_change end
 
 function toolPart(parts: MessageV2.Part[]) {
   return parts.find((part): part is MessageV2.ToolPart => part.type === "tool")
@@ -169,8 +193,8 @@ const lsp = Layer.succeed(
 
 const status = SessionStatus.layer.pipe(Layer.provideMerge(Bus.layer))
 const run = SessionRunState.layer.pipe(Layer.provide(status))
-const infra = Layer.mergeAll(NodeFileSystem.layer, CrossSpawnSpawner.defaultLayer)
-function makeHttp() {
+function makeHttp(spawn = CrossSpawnSpawner.defaultLayer) { // kilocode_change - allow a delayed fake spawner in timeout regressions
+  const infra = Layer.mergeAll(NodeFileSystem.layer, spawn) // kilocode_change - swap shell spawner for timeout regressions
   const deps = Layer.mergeAll(
     Session.defaultLayer,
     Snapshot.defaultLayer,
@@ -192,7 +216,7 @@ function makeHttp() {
   const registry = ToolRegistry.layer.pipe(
     Layer.provide(Skill.defaultLayer),
     Layer.provide(FetchHttpClient.layer),
-    Layer.provide(CrossSpawnSpawner.defaultLayer),
+    Layer.provide(spawn), // kilocode_change - keep tool registry on the test spawner
     Layer.provide(Git.defaultLayer),
     Layer.provide(Ripgrep.defaultLayer),
     Layer.provide(Format.defaultLayer),
@@ -221,8 +245,44 @@ function makeHttp() {
   ).pipe(Layer.provide(summary))
 }
 
+// kilocode_change start - delay post-exit shell output to verify timeout enforcement
+const encoder = new TextEncoder()
+function delayed() {
+  return Layer.effect(
+    ChildProcessSpawner.ChildProcessSpawner,
+    Effect.gen(function* () {
+      const real = yield* ChildProcessSpawner.ChildProcessSpawner
+      return ChildProcessSpawner.make(
+        Effect.fnUntraced(function* (command) {
+          const std = ChildProcess.isStandardCommand(command) ? command : undefined
+          if (!std?.args.some((arg) => arg.includes("drain-after-exit"))) return yield* real.spawn(command)
+          const wait = Stream.fromEffect(Effect.sleep("10 seconds")).pipe(Stream.flatMap(() => Stream.empty))
+          return ChildProcessSpawner.makeHandle({
+            pid: ChildProcessSpawner.ProcessId(0),
+            exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+            isRunning: Effect.succeed(false),
+            kill: () => Effect.void,
+            stdin: Sink.drain,
+            stdout: Stream.empty,
+            stderr: Stream.empty,
+            all: Stream.concat(Stream.make(encoder.encode("started")), wait),
+            getInputFd: () => Sink.drain,
+            getOutputFd: () => Stream.empty,
+            unref: Effect.succeed(Effect.void),
+          })
+        }),
+      )
+    }),
+  ).pipe(Layer.provide(CrossSpawnSpawner.defaultLayer))
+}
+// kilocode_change end
+
 const it = testEffect(makeHttp())
 const unix = process.platform !== "win32" ? it.live : it.live.skip
+// kilocode_change start - run the shell timeout regression with delayed post-exit output
+const waiting = testEffect(makeHttp(delayed()))
+const waitingUnix = process.platform !== "win32" ? waiting.live : waiting.live.skip
+// kilocode_change end
 
 // kilocode_change start - restore any spies between tests so review telemetry spy never leaks
 afterEach(() => {
@@ -1578,6 +1638,7 @@ it.live(
   30_000, // kilocode_change - Windows CI process startup can exceed 3s
 )
 
+// kilocode_change start - keep configured shell expansion coverage annotated beside timeout regressions
 unix(
   "command ! expansion uses configured shell over env shell",
   () =>
@@ -1616,6 +1677,114 @@ unix(
     ),
   30_000,
 )
+// kilocode_change end
+
+// kilocode_change start - keep capped command template expansions concurrent
+unix(
+  "environment timeout caps keep command template expansions concurrent",
+  () => {
+    const gate = path.join(process.env.TMPDIR ?? "/tmp", `kilo-command-expansion-${crypto.randomUUID()}`)
+    const file = JSON.stringify(gate)
+    return withSh(() =>
+      withCap(() =>
+        provideTmpdirServer(
+          ({ llm }) =>
+            Effect.gen(function* () {
+              const { prompt, chat } = yield* boot()
+              yield* llm.text("done")
+
+              const result = yield* prompt.command({
+                sessionID: chat.id,
+                command: "probe",
+                arguments: "",
+              })
+
+              expect(result.info.role).toBe("assistant")
+              const inputs = yield* llm.inputs
+              const text = JSON.stringify(inputs.at(-1)?.messages)
+              expect(text).toContain("first")
+              expect(text).toContain("second")
+              expect(text).not.toContain("shell command terminated")
+            }),
+          {
+            git: true,
+            config: (url) => ({
+              ...providerCfg(url),
+              command: {
+                probe: {
+                  template: [
+                    `First: !\`while [ ! -f ${file} ]; do sleep 0.05; done; printf first\``,
+                    `Second: !\`: > ${file}; printf second\``,
+                  ].join("\n"),
+                },
+              },
+            }),
+          },
+        ).pipe(Effect.ensuring(Effect.promise(() => Bun.file(gate).delete().catch(() => undefined)))),
+      ),
+    )
+  },
+  30_000,
+)
+// kilocode_change end
+
+// kilocode_change start - cap post-exit output draining
+waitingUnix(
+  "environment timeout caps shell output draining after process exit",
+  () =>
+    withSh(() =>
+      withCap(() =>
+        provideTmpdirInstance(
+          (_dir) =>
+            Effect.gen(function* () {
+              const { prompt, chat } = yield* boot()
+              const started = Date.now()
+              const result = yield* prompt.shell({
+                sessionID: chat.id,
+                agent: "build",
+                command: "drain-after-exit",
+              })
+              expect(completedTool(result.parts)?.state.output).toContain("started")
+              expect(completedTool(result.parts)?.state.output).toContain("shell command terminated")
+              expect(Date.now() - started).toBeLessThan(3_000)
+            }),
+          { git: true, config: cfg },
+        ),
+      ),
+    ),
+  30_000,
+)
+// kilocode_change end
+
+// kilocode_change start
+unix(
+  "environment timeout caps direct shell commands",
+  () =>
+    withSh(() =>
+      withCap(() =>
+        provideTmpdirInstance(
+          (_dir) =>
+            Effect.gen(function* () {
+              const { prompt, chat } = yield* boot()
+              const result = yield* prompt.shell({
+                sessionID: chat.id,
+                agent: "build",
+                command: "printf started; sleep 30",
+              })
+              const tool = completedTool(result.parts)
+              expect(tool?.state.output).toContain("started")
+              expect(tool?.state.output).toContain(
+                "shell command terminated after exceeding environment timeout 500 ms.",
+              )
+              expect(tool?.state.output).toContain("You're running in a sandbox with a fixed timeout.")
+            }),
+          { git: true, config: cfg },
+        ),
+      ),
+    ),
+  30_000,
+)
+// kilocode_change end
 
 unix(
   "cancel interrupts shell and resolves cleanly",

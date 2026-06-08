@@ -19,6 +19,7 @@ import { ShellID } from "./shell/id"
 import * as Truncate from "./truncate"
 import { Plugin } from "@/plugin"
 import { normalizeUrls } from "@/kilocode/util/url" // kilocode_change
+import { CommandTimeout } from "@/kilocode/command-timeout" // kilocode_change
 import { ChildProcess } from "effect/unstable/process"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
 import { ShellPrompt, type Parameters } from "./shell/prompt"
@@ -462,6 +463,7 @@ export const ShellTool = Tool.define(
         cwd: string
         env: NodeJS.ProcessEnv
         timeout: number
+        note?: string // kilocode_change
         description: string
       },
       ctx: Tool.Context,
@@ -568,9 +570,12 @@ export const ShellTool = Tool.define(
 
       const meta: string[] = []
       if (expired) {
+        // kilocode_change start
         meta.push(
-          `shell tool terminated command after exceeding timeout ${input.timeout} ms. If this command is expected to take longer and is not waiting for interactive input, retry with a larger timeout value in milliseconds.`,
+          input.note ??
+            `shell tool terminated command after exceeding timeout ${input.timeout} ms. If this command is expected to take longer and is not waiting for interactive input, retry with a larger timeout value in milliseconds.`,
         )
+        // kilocode_change end
       }
       if (aborted) meta.push("User aborted the command")
       const raw = list.map((item) => item.text).join("")
@@ -635,7 +640,7 @@ export const ShellTool = Tool.define(
               if (params.timeout !== undefined && params.timeout < 0) {
                 throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
               }
-              const timeout = params.timeout ?? DEFAULT_TIMEOUT
+              const limit = CommandTimeout.clamp(params.timeout ?? DEFAULT_TIMEOUT) // kilocode_change
               const ps = Shell.ps(shell)
               yield* Effect.scoped(
                 Effect.gen(function* () {
@@ -659,7 +664,8 @@ export const ShellTool = Tool.define(
                   command: params.command,
                   cwd,
                   env: yield* shellEnv(ctx, cwd),
-                  timeout,
+                  timeout: limit.timeout, // kilocode_change
+                  note: limit.capped ? CommandTimeout.note(limit, "shell tool terminated command") : undefined, // kilocode_change
                   description: params.description ?? params.command, // kilocode_change
                 },
                 ctx,

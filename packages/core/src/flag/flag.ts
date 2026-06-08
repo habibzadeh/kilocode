@@ -115,6 +115,12 @@ export const Flag = {
     return process.env["KILO_CLIENT"] ?? "cli"
   },
   // kilocode_change start
+  get KILO_COMMAND_TIMEOUT_MAX_MS() {
+    return number("KILO_COMMAND_TIMEOUT_MAX_MS")
+  },
+  get KILO_COMMAND_TIMEOUT_MAX_MS_MESSAGE() {
+    return process.env["KILO_COMMAND_TIMEOUT_MAX_MS_MESSAGE"]
+  },
   get KILO_SESSION_RETRY_LIMIT() {
     return number("KILO_SESSION_RETRY_LIMIT")
   },
