@@ -940,12 +940,12 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 yield* drain.pipe(Effect.andThen(handle.exitCode))
                 return
               }
-              const timeout = yield* CommandTimeout.wait(
+              const timedOut = yield* CommandTimeout.wait(
                 handle,
                 drain,
                 limit,
               )
-              if (!timeout) {
+              if (!timedOut) {
                 return
               }
               expired = true

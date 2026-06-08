@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { Effect, Exit, Stream } from "effect"
+import { Effect, Exit, Fiber, Stream } from "effect"
 import * as Sink from "effect/Sink"
+import * as TestClock from "effect/testing/TestClock"
 import { ChildProcessSpawner } from "effect/unstable/process"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -52,6 +53,38 @@ describe("CommandTimeout", () => {
       "shell tool terminated command after exceeding environment timeout 250 ms. You're running in a sandbox with a fixed timeout.",
     )
   })
+
+  it.effect("enforces the environment deadline without grace", () =>
+    Effect.gen(function* () {
+      const state = { killed: false }
+      const handle = ChildProcessSpawner.makeHandle({
+        pid: ChildProcessSpawner.ProcessId(0),
+        exitCode: Effect.never,
+        isRunning: Effect.succeed(true),
+        kill: () =>
+          Effect.sync(() => {
+            state.killed = true
+          }),
+        stdin: Sink.drain,
+        stdout: Stream.empty,
+        stderr: Stream.empty,
+        all: Stream.empty,
+        getInputFd: () => Sink.drain,
+        getOutputFd: () => Stream.empty,
+        unref: Effect.succeed(Effect.void),
+      })
+      const fiber = yield* CommandTimeout.wait(handle, Effect.never, { timeout: 25, capped: true }).pipe(
+        Effect.forkChild,
+      )
+      yield* Effect.yieldNow
+
+      yield* TestClock.adjust("24 millis")
+      expect(state.killed).toBe(false)
+      yield* TestClock.adjust("1 millis")
+      expect(state.killed).toBe(true)
+      expect(yield* Fiber.join(fiber)).toBe(true)
+    }),
+  )
 
   it.live("preserves uncapped shell expansion output", () =>
     Effect.gen(function* () {

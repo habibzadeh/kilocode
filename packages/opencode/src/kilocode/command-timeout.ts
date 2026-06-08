@@ -32,7 +32,7 @@ export namespace CommandTimeout {
   export function wait<A, E, R>(handle: ChildProcessHandle, drain: Effect.Effect<A, E, R>, limit: Limit) {
     return Effect.raceFirst(
       Effect.all([handle.exitCode, drain], { concurrency: 2 }).pipe(Effect.as(false)),
-      Effect.sleep(`${limit.timeout + 100} millis`).pipe(Effect.as(true)),
+      Effect.sleep(`${limit.timeout} millis`).pipe(Effect.as(true)),
     ).pipe(
       Effect.flatMap((expired) => {
         if (!expired) return Effect.succeed(false)
