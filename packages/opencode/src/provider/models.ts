@@ -14,6 +14,7 @@ import { Config } from "../config/config"
 import { ModelCache } from "./model-cache"
 import { Auth } from "../auth"
 import { AI_SDK_PROVIDERS, KILO_OPENROUTER_BASE, PROMPTS } from "@kilocode/kilo-gateway"
+import * as ModelsRefresh from "@/kilocode/provider/models-refresh"
 // kilocode_change end
 
 // kilocode_change start
@@ -288,6 +289,7 @@ export const layer: Layer.Layer<Service, never, Requirements> = Layer.effect(
           if (!force && (yield* fresh())) return
           yield* fetchAndWrite()
           yield* invalidate
+          yield* ModelsRefresh.notify() // kilocode_change
         }),
       ).pipe(
         Effect.tapCause((cause) => Effect.logError("Failed to fetch models.dev", { cause })),
